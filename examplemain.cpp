@@ -100,7 +100,7 @@ EnvCreateResult EnvCreateFunc() {
 	return { match, gym };
 }
 
-int main() {
+int main(int argc, char* argv[]) {
 	// Initialize RocketSim with collision meshes
 	RocketSim::Init("./collision_meshes");
 
@@ -137,6 +137,13 @@ int main() {
 	
 	cfg.sendMetrics = true; // Send metrics
 	cfg.renderMode = false; // Don't render
+
+	for (int i = 1; i < argc; ++i) {
+		if (std::strcmp(argv[i], "--render") == 0) {
+			cfg.renderMode = true;
+			break;
+		}
+	}
 
 	// Make the learner with the environment creation function and the config we just made
 	Learner learner = Learner(EnvCreateFunc, cfg);
