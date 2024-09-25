@@ -4,51 +4,52 @@
 
 namespace RLGPC {
 
-	struct ExperienceTensors {
-		torch::Tensor
-			states, actions, logProbs, rewards, 
+    struct ExperienceTensors {
+        torch::Tensor
+            states, actions, logProbs, rewards,
 
 #ifdef RG_PARANOID_MODE
-			debugCounters,
+            debugCounters,
 #endif
 
-			nextStates, dones, truncated, values, advantages;
+            nextStates, dones, truncated, values, advantages;
 
-		torch::Tensor* begin() { return &states; }
-		torch::Tensor* end() { return &advantages + 1; }
-	};
+        torch::Tensor* begin() { return &states; }
+        torch::Tensor* end() { return &advantages + 1; }
 
-	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/experience_buffer.py
-	class ExperienceBuffer {
-	public:
+        torch::Tensor* begin() const { return const_cast<torch::Tensor*>(&states); }
+        torch::Tensor* end() const { return const_cast<torch::Tensor*>(&advantages) + 1; }
+    };
 
-		torch::Device device;
-		int seed;
+    // https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/experience_buffer.py
+    class ExperienceBuffer {
+    public:
 
-		ExperienceTensors data;
+        torch::Device device;
+        int seed;
 
-		int64_t curSize = 0;
-		int64_t maxSize;
+        ExperienceTensors data;
 
-		std::default_random_engine rng;
+        int64_t curSize;
+        int64_t maxSize;
 
-		ExperienceBuffer(int64_t maxSize, int seed, torch::Device device);
+        std::default_random_engine rng;
 
-		void SubmitExperience(ExperienceTensors& data);
+        ExperienceBuffer(int64_t maxSize, int seed, torch::Device device);
 
-		struct SampleSet {
-			torch::Tensor actions, logProbs, states, values, advantages;
-		};
-		SampleSet _GetSamples(const int64_t* indices, size_t size) const;
+        void SubmitExperience(ExperienceTensors& data);
 
-		// Not const because it uses our random engine
-		std::vector<SampleSet> GetAllBatchesShuffled(int64_t batchSize);
+        struct SampleSet {
+            torch::Tensor actions, logProbs, states, values, advantages;
+        };
+        SampleSet _GetSamples(const int64_t* indices, size_t size) const;
 
-		void Clear();
+        // Non const car utilise notre générateur aléatoire
+        std::vector<SampleSet> GetAllBatchesShuffled(int64_t batchSize);
 
-		
+        void Clear();
 
-		// Combine two tensors into one, removing older data if needed to fit target size
-		static torch::Tensor _Concat(torch::Tensor t1, torch::Tensor t2, int64_t size);
-	};
+        // Combine deux tenseurs en un, en supprimant les données plus anciennes si nécessaire pour atteindre la taille cible
+        static torch::Tensor _Concat(torch::Tensor t1, torch::Tensor t2, int64_t size);
+    };
 }

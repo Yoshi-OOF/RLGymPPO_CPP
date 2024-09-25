@@ -21,6 +21,7 @@ build/
 x86/
 x64/
 Release/
+RelWithDebInfo/
 Debug
 out/
 *.obj

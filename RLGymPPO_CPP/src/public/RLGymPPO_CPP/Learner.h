@@ -32,7 +32,7 @@ namespace RLGPC {
 		uint64_t
 			totalTimesteps = 0,
 			totalEpochs = 0;
-			
+
 		WelfordRunningStat returnStats = WelfordRunningStat(1);
 
 		Learner(EnvCreateFn envCreateFunc, LearnerConfig config);

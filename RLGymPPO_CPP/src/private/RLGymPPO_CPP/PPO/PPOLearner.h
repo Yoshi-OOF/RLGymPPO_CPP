@@ -13,34 +13,40 @@
 #include "../Util/ThreadPool.h"
 
 namespace RLGPC {
-	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/ppo_learner.py
-	class PPOLearner {
-	public:
-		DiscretePolicy* policy, *policyHalf;
-		ValueEstimator* valueNet, *valueNetHalf;
-		torch::optim::Adam *policyOptimizer, *valueOptimizer;
-		torch::nn::MSELoss valueLossFn;
+    // https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/ppo_learner.py
+    class PPOLearner {
+    public:
+        DiscretePolicy* policy;
+        DiscretePolicy* policyHalf;
+        ValueEstimator* valueNet;
+        ValueEstimator* valueNetHalf;
+        torch::optim::Adam* policyOptimizer;
+        torch::optim::Adam* valueOptimizer;
+        torch::nn::MSELoss valueLossFn;
 
-		GradNoiseTracker* noiseTrackerPolicy, *noiseTrackerValueNet;
+        GradNoiseTracker* noiseTrackerPolicy;
+        GradNoiseTracker* noiseTrackerValueNet;
 
-		PPOLearnerConfig config;
-		torch::Device device;
+        PPOLearnerConfig config;
+        torch::Device device;
 
-		ThreadPool* minibatchThreadPool = NULL;
+        ThreadPool* minibatchThreadPool;
 
-		int cumulativeModelUpdates = 0;
+        int cumulativeModelUpdates = 0;
 
-		PPOLearner(
-			int obsSpaceSize, int actSpaceSize,
-			PPOLearnerConfig config, torch::Device device
-		);
-		
-		void Learn(ExperienceBuffer* expBuffer, Report& report);
+        PPOLearner(
+            int obsSpaceSize, int actSpaceSize,
+            PPOLearnerConfig config, torch::Device device
+        );
 
-		void SaveTo(std::filesystem::path folderPath);
-		void LoadFrom(std::filesystem::path folderPath);
-		RLGPC::DiscretePolicy* LoadAdditionalPolicy(std::filesystem::path folderPath);
+        ~PPOLearner();
 
-		void UpdateLearningRates(float policyLR, float criticLR);
-	};
+        void Learn(ExperienceBuffer* expBuffer, Report& report);
+
+        void SaveTo(std::filesystem::path folderPath);
+        void LoadFrom(std::filesystem::path folderPath);
+        RLGPC::DiscretePolicy* LoadAdditionalPolicy(std::filesystem::path folderPath);
+
+        void UpdateLearningRates(float policyLR, float criticLR);
+    };
 }
