@@ -9,6 +9,7 @@
 #include <RLGymSim_CPP/Utils/ActionParsers/DiscreteAction.h>
 
 #include "RLBotClient.h"
+#include "CustomRewards.h"
 
 using namespace RLGPC; // RLGymPPO
 using namespace RLGSC; // RLGymSim
@@ -65,7 +66,7 @@ EnvCreateResult EnvCreateFunc() {
 			{ new FaceBallReward(), 0.1f }, 
 
 			// Moderate reward for going towards the ball
-			{ new VelocityPlayerToBallReward(), 0.5f }, 
+			{ new SpeedTowardBallReward(), 0.5f },
 
 			// Bigger reward for having the ball go towards the goal
 			{ new VelocityBallToGoalReward(), 1.0f }, 
