@@ -5,42 +5,50 @@
 namespace py = pybind11;
 using namespace RLGPC;
 
-RLGPC::MetricSender::MetricSender(std::string _projectName, std::string _groupName, std::string _runName, std::string runID) :
-	projectName(_projectName), groupName(_groupName), runName(_runName) {
+RLGPC::MetricSender::MetricSender(std::string _projectName, std::string _groupName, std::string _runName, std::string runID)
+    : projectName(_projectName), groupName(_groupName), runName(_runName) {
 
-	RG_LOG("Initializing MetricSender...");
+    RG_LOG("Initializing MetricSender...");
 
-	try {
-		pyMod = py::module::import("python_scripts.metric_receiver");
-	} catch (std::exception& e) {
-		RG_ERR_CLOSE("MetricSender: Failed to import metrics receiver, exception: " << e.what());
-	}
+    try {
+        pyMod = py::module::import("python_scripts.metric_receiver");
+    }
+    catch (const std::exception& e) {
+        RG_ERR_CLOSE("MetricSender: Failed to import metrics receiver, exception: " << e.what());
+    }
 
-	try {
-		auto returedRunID = pyMod.attr("init")(PY_EXEC_PATH, projectName, groupName, runName, runID);
-		curRunID = returedRunID.cast<std::string>();
-		RG_LOG(" > " << (runID.empty() ? "Starting" : "Continuing") << " run with ID : \"" << curRunID << "\"...");
+    try {
+        auto returnedRunID = pyMod.attr("init")(PY_EXEC_PATH, projectName, groupName, runName, runID);
+        curRunID = returnedRunID.cast<std::string>();
+        RG_LOG(" > " << (runID.empty() ? "Starting" : "Continuing") << " run with ID : \"" << curRunID << "\"...");
 
-	} catch (std::exception& e) {
-		RG_ERR_CLOSE("MetricSender: Failed to initialize in Python, exception: " << e.what());
-	}
+    }
+    catch (const std::exception& e) {
+        RG_ERR_CLOSE("MetricSender: Failed to initialize in Python, exception: " << e.what());
+    }
 
-	RG_LOG(" > MetricSender initalized.");
+    RG_LOG(" > MetricSender initialized.");
 }
 
 void RLGPC::MetricSender::Send(const Report& report) {
-	py::dict reportDict = {};
+    if (!pyMod) {
+        RG_ERR_CLOSE("MetricSender: Python module not initialized.");
+    }
 
-	for (auto& pair : report.data)
-		reportDict[pair.first.c_str()] = pair.second;
+    py::dict reportDict;
 
-	try {
-		pyMod.attr("add_metrics")(reportDict);
-	} catch (std::exception& e) {
-		RG_ERR_CLOSE("MetricSender: Failed to add metrics, exception: " << e.what());
-	}
+    for (const auto& pair : report.data) {
+        reportDict[pair.first.c_str()] = pair.second;
+    }
+
+    try {
+        pyMod.attr("add_metrics")(reportDict);
+    }
+    catch (const std::exception& e) {
+        RG_ERR_CLOSE("MetricSender: Failed to add metrics, exception: " << e.what());
+    }
 }
 
 RLGPC::MetricSender::~MetricSender() {
-	
+    // Nettoyage si nécessaire
 }

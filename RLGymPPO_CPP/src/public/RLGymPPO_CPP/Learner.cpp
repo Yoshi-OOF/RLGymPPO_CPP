@@ -36,7 +36,6 @@ namespace RLGPC {
             }
             result.push_back(v);
         }
-
         return result;
     }
 
@@ -91,15 +90,17 @@ namespace RLGPC {
         }
     }
 
-    Learner::Learner(EnvCreateFn envCreateFunc, LearnerConfig _config) :
-        envCreateFn(envCreateFunc),
-        config(std::move(_config))
+    Learner::Learner(EnvCreateFn envCreateFunc, LearnerConfig _config)
+        : envCreateFn(envCreateFunc),
+        config(std::move(_config)),
+        metricSender(nullptr),
+        renderSender(nullptr),
+        skillTracker(nullptr),
+        totalTimesteps(0),
+        totalEpochs(0),
+        returnStats(1)
     {
         pybind11::initialize_interpreter();
-
-#ifndef NDEBUG
-
-#endif
 
         if (config.timestepsPerSave == 0)
             config.timestepsPerSave = config.timestepsPerIteration;
@@ -107,35 +108,25 @@ namespace RLGPC {
         if (config.standardizeOBS)
             RG_ERR_CLOSE("LearnerConfig.standardizeOBS has not yet been implemented, sorry");
 
-
         if (config.renderMode && !config.renderDuringTraining) {
             config.numThreads = config.numGamesPerThread = 1;
-
             config.sendMetrics = false;
-
             config.checkpointSaveFolder.clear();
-
             config.timestepsPerIteration = INT_MAX;
         }
 
         if (config.saveFolderAddUnixTimestamp && !config.checkpointSaveFolder.empty())
             config.checkpointSaveFolder += "-" + std::to_string(std::time(0));
 
-
         torch::manual_seed(config.randomSeed);
 
-        at::Device device = at::Device(at::kCPU);
-        if (
-            config.deviceType == LearnerDeviceType::GPU_CUDA ||
-            (config.deviceType == LearnerDeviceType::AUTO && torch::cuda::is_available())
-            ) {
+        at::Device device = at::kCPU;
+        if (config.deviceType == LearnerDeviceType::GPU_CUDA ||
+            (config.deviceType == LearnerDeviceType::AUTO && torch::cuda::is_available())) {
 
-            torch::Tensor t;
             bool deviceTestFailed = false;
             try {
-                t = torch::tensor(0);
-                t = t.to(at::Device(at::kCUDA));
-                t = t.cpu();
+                auto t = torch::tensor(0).to(at::kCUDA).cpu();
             }
             catch (...) {
                 deviceTestFailed = true;
@@ -147,10 +138,7 @@ namespace RLGPC {
                     (torch::cuda::is_available() ? "libtorch cannot access the GPU" : "CUDA is not available to libtorch") << ".\n" <<
                     "Make sure your libtorch comes with CUDA support, and that CUDA is installed properly."
                 );
-            device = at::Device(at::kCUDA);
-        }
-        else {
-            device = at::Device(at::kCPU);
+            device = at::kCUDA;
         }
 
         torch::set_num_interop_threads(1);
@@ -170,7 +158,6 @@ namespace RLGPC {
         }
 
         expBuffer = new ExperienceBuffer(config.expBufferSize, config.randomSeed, device);
-
         ppo = new PPOLearner(obsSize, actionAmount, config.ppo, device);
 
         agentMgr = new ThreadAgentManager(
@@ -188,9 +175,6 @@ namespace RLGPC {
             agentMgr->renderTimeScale = config.renderTimeScale;
             agentMgr->renderDuringTraining = config.renderDuringTraining;
         }
-        else {
-            renderSender = nullptr;
-        }
 
         if (config.skillTrackerConfig.enabled) {
             if (config.skillTrackerConfig.envCreateFunc == nullptr)
@@ -198,19 +182,14 @@ namespace RLGPC {
 
             skillTracker = new SkillTracker(config.skillTrackerConfig, renderSender);
         }
-        else {
-            skillTracker = nullptr;
-        }
 
         if (!config.checkpointLoadFolder.empty())
             Load();
 
         if (config.sendMetrics) {
+            metricSender = new MetricSender(config.metricsProjectName, config.metricsGroupName, config.metricsRunName, runID);
             if (!runID.empty())
-                metricSender = new MetricSender(config.metricsProjectName, config.metricsGroupName, config.metricsRunName, runID);
-        }
-        else {
-            metricSender = nullptr;
+                runID = metricSender->curRunID;
         }
     }
 
@@ -246,7 +225,7 @@ namespace RLGPC {
             rrs["count"] = returnStats.count;
         }
 
-        if (config.sendMetrics)
+        if (config.sendMetrics && metricSender)
             j["run_id"] = metricSender->curRunID;
 
         std::string jStr = j.dump(4);
@@ -320,7 +299,6 @@ namespace RLGPC {
                     RG_ERR_CLOSE("Failed to remove old checkpoint from " << removePath << ", error: " << ec.message());
             }
         }
-
     }
 
     void Learner::Load() {
@@ -387,7 +365,6 @@ namespace RLGPC {
 
                     if (bestTimesteps != -1 && bestTimesteps >= targetTimesteps - maxAcceptableOverage) {
 
-
                         auto oldPolicy = ppo->LoadAdditionalPolicy(config.checkpointLoadFolder / std::to_string(bestTimesteps));
 
                         if (oldPolicy) {
@@ -405,16 +382,10 @@ namespace RLGPC {
 
     void Learner::Learn() {
 
-#ifdef RG_PARANOID_MODE
-
-#endif
-
-
         agentMgr->SetStepCallback(stepCallback);
         agentMgr->StartAgents();
 
         auto device = ppo->device;
-
 
         int64_t tsSinceSave = 0;
         Timer epochTimer;
@@ -443,7 +414,7 @@ namespace RLGPC {
             try {
                 AddNewExperience(timesteps, report);
             }
-            catch (std::exception& e) {
+            catch (const std::exception& e) {
                 RG_ERR_CLOSE("Exception during Learner::AddNewExperience(): " << e.what());
             }
 
@@ -465,7 +436,7 @@ namespace RLGPC {
                 try {
                     ppo->Learn(expBuffer, report);
                 }
-                catch (std::exception& e) {
+                catch (const std::exception& e) {
                     RG_ERR_CLOSE("Exception during PPOLearner::Learn(): " << e.what());
                 }
 
@@ -513,7 +484,6 @@ namespace RLGPC {
 
             {
                 report["Total Iteration Time"] = relEpochTime;
-
                 report["Collection Time"] = relCollectionTime;
                 report["Consumption Time"] = consumptionTime;
                 report["Collect-Consume Overlap Time"] = (trueCollectionTime - relCollectionTime);
@@ -540,7 +510,7 @@ namespace RLGPC {
                 RG_LOG("\n");
             }
 
-            if (config.sendMetrics)
+            if (config.sendMetrics && metricSender)
                 metricSender->Send(report);
 
             tsSinceSave += timestepsCollected;
@@ -552,24 +522,19 @@ namespace RLGPC {
             agentMgr->ResetMetrics();
         }
 
-
         agentMgr->StopAgents();
     }
 
     void Learner::AddNewExperience(GameTrajectory& gameTraj, Report& report) {
         RG_NOGRAD;
 
-
         gameTraj.RemoveCapacity();
         auto& trajData = gameTraj.data;
 
         size_t count = trajData.actions.size(0);
-
         size_t valPredCount = count + 1;
 
-
         torch::Tensor valPredsTensor = torch::zeros({ static_cast<int64_t>(valPredCount) });
-
 
         for (size_t i = 0; i < valPredCount; i += ppo->config.miniBatchSize) {
             size_t start = i;
@@ -633,9 +598,9 @@ namespace RLGPC {
             std::move(trajData.logProbs),
             std::move(trajData.rewards),
 
-    #ifdef RG_PARANOID_MODE
+#ifdef RG_PARANOID_MODE
             std::move(trajData.debugCounters),
-    #endif
+#endif
 
             std::move(trajData.nextStates),
             std::move(trajData.dones),
