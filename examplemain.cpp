@@ -107,8 +107,8 @@ int main() {
 	LearnerConfig cfg = {};
 
 	// Play around with these to see what the optimal is for your machine, more isn't always better
-	cfg.numThreads = 16;
-	cfg.numGamesPerThread = 24;
+	cfg.numThreads = 10;
+	cfg.numGamesPerThread = 15;
 
 	// We want a large itr/batch size
 	// You'll want to increase this as your bot improves, up to an extent
