@@ -1,117 +1,135 @@
 #include "ThreadAgentManager.h"
 #include <RLGymPPO_CPP/Util/Timer.h>
+#include <thread>
 
-void RLGPC::ThreadAgentManager::CreateAgents(EnvCreateFn func, int amount, int gamesPerAgent) {
-	for (int i = 0; i < amount; i++) {
-		int numGames = gamesPerAgent;
-		if (renderSender && renderDuringTraining) {
-			if (i == 0)
-				numGames = 1;
-		}
-		auto agent = new ThreadAgent(this, numGames, maxCollect / amount, func, i);
-		agents.push_back(agent);
-	}
-}
+namespace RLGPC {
 
-RLGPC::GameTrajectory RLGPC::ThreadAgentManager::CollectTimesteps(uint64_t amount) {
+    ThreadAgentManager::ThreadAgentManager(
+        DiscretePolicy* policy, DiscretePolicy* policyHalf, ExperienceBuffer* expBuffer,
+        bool standardizeOBS, bool deterministic, bool blockConcurrentInfer, uint64_t maxCollect, torch::Device device)
+        : policy(policy), policyHalf(policyHalf), expBuffer(expBuffer),
+        standardizeOBS(standardizeOBS), deterministic(deterministic),
+        blockConcurrentInfer(blockConcurrentInfer), maxCollect(maxCollect), device(device) {}
 
-	RG_LOG("Collecting timesteps...");
-	// We will just wait in this loop until our agents have collected enough total timesteps
-	while (true) {
-		uint64_t totalSteps = 0;
-		for (auto agent : agents)
-			totalSteps += agent->stepsCollected;
+    void ThreadAgentManager::CreateAgents(EnvCreateFn func, int amount, int gamesPerAgent) {
+        for (int i = 0; i < amount; ++i) {
+            int numGames = gamesPerAgent;
+            if (renderSender && renderDuringTraining && i == 0) {
+                numGames = 1;
+            }
+            auto agent = new ThreadAgent(this, numGames, maxCollect / amount, func, i);
+            agents.push_back(agent);
+        }
+    }
 
-		if (totalSteps >= amount)
-			break;
+    void ThreadAgentManager::StartAgents() {
+        for (auto* agent : agents) {
+            agent->Start();
+        }
+    }
 
-		// "waiter! waiter! more timesteps please!"
+    void ThreadAgentManager::StopAgents() {
+        for (auto* agent : agents) {
+            agent->Stop();
+        }
+    }
 
-		// TODO: Possibly sub-optimal waiting solution...
-		// Could also just have the agents keep track of total step collection and unlock this thread?
-		THREAD_WAIT();
-	}
+    void ThreadAgentManager::SetStepCallback(StepCallback callback) {
+        for (auto* agent : agents) {
+            for (auto* game : agent->gameInsts) {
+                game->stepCallback = callback;
+            }
+        }
+    }
 
-	// Our agents have collected the timesteps we need
-	 
-	RG_LOG("Concatenating timesteps...");
+    GameTrajectory ThreadAgentManager::CollectTimesteps(uint64_t amount) {
+        while (true) {
+            uint64_t totalSteps = 0;
+            for (auto* agent : agents) {
+                totalSteps += agent->stepsCollected.load();
+            }
+            if (totalSteps >= amount) {
+                break;
+            }
+            std::this_thread::yield();
+        }
 
-	GameTrajectory result = {};
-	size_t totalTimesteps = 0;
+        GameTrajectory result;
+        size_t totalTimesteps = 0;
 
-	try {
-		// Combine all of their trajectories into one long trajectory
-		// We will return this giant trajectory to the learner
-		std::vector<GameTrajectory> trajs;
-		for (auto agent : agents) {
-			agent->trajMutex.lock();
-			for (auto& trajSet : agent->trajectories) {
-				for (auto& traj : trajSet) {
-					if (traj.size > 0) {
-						// If the last timestep is not a done, mark it as truncated
-						// The GAE needs to know when the environment state stops being continuous
-						// This happens either because the environment reset (i.e. goal scored), called "done",
-						//	or the data got cut short, called "truncated"
-						traj.data.truncateds[traj.size - 1] = (traj.data.dones[traj.size - 1].item<float>() == 0);
-						trajs.push_back(traj);
-						totalTimesteps += traj.size;
-						traj.Clear();
-					} else {
-						// Kinda lame but does happen
-					}
-				}
-			}
-			agent->stepsCollected = 0;
-			agent->trajMutex.unlock();
-		}
+        try {
+            std::vector<GameTrajectory> trajs;
+            for (auto* agent : agents) {
+                std::lock_guard<std::mutex> lock(agent->trajMutex);
+                for (auto& trajSet : agent->trajectories) {
+                    for (auto& traj : trajSet) {
+                        if (traj.size > 0) {
+                            traj.data.truncateds[traj.size - 1] = (traj.data.dones[traj.size - 1].item<float>() == 0);
+                            trajs.push_back(std::move(traj));
+                            totalTimesteps += traj.size;
+                            traj.Clear();
+                        }
+                    }
+                }
+                agent->stepsCollected = 0;
+            }
 
-		result.MultiAppend(trajs);
-	} catch (std::exception& e) {
-		RG_ERR_CLOSE("Exception concatenating timesteps: " << e.what());
-	}
+            result.MultiAppend(trajs);
+        }
+        catch (const std::exception& e) {
+            RG_ERR_CLOSE("Exception concatenating timesteps: " << e.what());
+        }
 
-	// Being extra paranoid in case something goes wrong
-	if (result.size != totalTimesteps)
-		RG_ERR_CLOSE("ThreadAgentManager::CollectTimesteps(): Agent timestep concatenation failed (" << result.size << " != " << totalTimesteps << ")");
+        if (result.size != totalTimesteps) {
+            RG_ERR_CLOSE("ThreadAgentManager::CollectTimesteps(): Timestep concatenation failed (" << result.size << " != " << totalTimesteps << ")");
+        }
 
-	lastIterationTime = iterationTimer.Elapsed();
-	iterationTimer.Reset();
-	return result;
-}
+        lastIterationTime = iterationTimer.Elapsed();
+        iterationTimer.Reset();
+        return result;
+    }
 
-void RLGPC::ThreadAgentManager::GetMetrics(Report& report) {
-	AvgTracker avgStepRew, avgEpRew;
-	for (auto agent : agents) {
-		for (auto game : agent->gameInsts) {
-			avgStepRew += game->avgStepRew;
-			avgEpRew += game->avgEpRew;
-		}
-	}
-	
-	report["Average Step Reward"] = avgStepRew.Get();
-	report["Average Episode Reward"] = avgEpRew.Get();
+    void ThreadAgentManager::GetMetrics(Report& report) {
+        AvgTracker avgStepRew, avgEpRew;
+        for (auto* agent : agents) {
+            for (auto* game : agent->gameInsts) {
+                avgStepRew += game->avgStepRew;
+                avgEpRew += game->avgEpRew;
+            }
+        }
 
-	ThreadAgent::Times avgTimes = {};
+        report["Average Step Reward"] = avgStepRew.Get();
+        report["Average Episode Reward"] = avgEpRew.Get();
 
-	for (ThreadAgent* agent : agents)
-		for (auto itr1 = avgTimes.begin(), itr2 = agent->times.begin(); itr1 != avgTimes.end(); itr1++, itr2++)
-			*itr1 += *itr2;
-	
-	for (double& time : avgTimes)
-		time /= agents.size();
+        ThreadAgent::Times avgTimes;
+        for (auto* agent : agents) {
+            for (auto itr1 = avgTimes.begin(), itr2 = agent->times.begin(); itr1 != avgTimes.end(); ++itr1, ++itr2) {
+                *itr1 += *itr2;
+            }
+        }
 
-	report["Env Step Time"] = avgTimes.envStepTime;
-	// NOTE: Because of non-blocking mode, a good portion of policy inference time is waited when appending trajectories
-	//	This means the trajectory append time is not correct at all, so this is a temporary solution
-	report["Policy Infer Time"] = avgTimes.policyInferTime + avgTimes.trajAppendTime;
-}
+        for (double& time : avgTimes) {
+            time /= agents.size();
+        }
 
-void RLGPC::ThreadAgentManager::ResetMetrics() {
-	for (auto agent : agents) {
-		agent->times = {};
-		agent->gameStepMutex.lock();
-		for (auto game : agent->gameInsts)
-			game->ResetMetrics();
-		agent->gameStepMutex.unlock();
-	}
+        report["Env Step Time"] = avgTimes.envStepTime;
+        report["Policy Infer Time"] = avgTimes.policyInferTime + avgTimes.trajAppendTime;
+    }
+
+    void ThreadAgentManager::ResetMetrics() {
+        for (auto* agent : agents) {
+            agent->times = {};
+            std::lock_guard<std::mutex> lock(agent->gameStepMutex);
+            for (auto* game : agent->gameInsts) {
+                game->ResetMetrics();
+            }
+        }
+    }
+
+    ThreadAgentManager::~ThreadAgentManager() {
+        for (auto* agent : agents) {
+            delete agent;
+        }
+    }
+
 }
