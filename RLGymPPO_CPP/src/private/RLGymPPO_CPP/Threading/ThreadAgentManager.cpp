@@ -59,6 +59,7 @@ namespace RLGPC {
 
         try {
             std::vector<GameTrajectory> trajs;
+            trajs.reserve(agents.size() * agents[0]->trajectories.size());
             for (auto* agent : agents) {
                 std::lock_guard<std::mutex> lock(agent->trajMutex);
                 for (auto& trajSet : agent->trajectories) {

@@ -79,9 +79,9 @@ void RLGPC::SkillTracker::UpdateRatings(RatingSet& winner, RatingSet& loser, boo
 	float expected = 1 / (powf(10, expDelta) + 1);
 
 	if (updateWinner)
-		winner.data[mode] += config.ratingInc * (1 - expected);
+		winner.data[mode].store(winner.data[mode] + config.ratingInc * (1 - expected));
 	if (updateLoser)
-		loser.data[mode] += config.ratingInc * (expected - 1);
+		loser.data[mode].store(loser.data[mode] + config.ratingInc * (expected - 1));
 }
 
 void RunThread(
